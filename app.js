@@ -100,8 +100,8 @@ function render() {
   const routine = store.getRoutine();
   if (!routine) {
     root.append(h("div", { class: "center" }, h("h1", {}, "운동 기록"),
-      h("p", {}, state.syncing ? "루틴을 받는 중이에요…" : "아직 루틴을 받지 못했어요."),
-      h("p", { class: "muted" }, syncLine()),
+      h("p", {}, state.syncing ? "루틴을 받는 중이에요… (처음에는 20초쯤 걸릴 수 있어요)" : "아직 루틴을 받지 못했어요."),
+      h("p", { id: "sync", class: "muted" }, syncLine()),
       h("button", { class: "btn", onclick: () => syncNow({ manual: true }) }, "다시 받기")));
     return;
   }
@@ -699,10 +699,10 @@ async function checkUpdate() {
 
 function start() {
   readSetupLink();
+  syncNow(); // 먼저 시작해서 첫 화면에 "받는 중"이 보이게
   render();
   registerWorker();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-  syncNow();
   window.addEventListener("online", () => syncNow());
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") syncNow(); });
   window.addEventListener("hashchange", () => { if (readSetupLink()) { render(); syncNow(); } });

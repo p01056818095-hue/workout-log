@@ -25,7 +25,7 @@ export function classifyResponse(status, text) {
   return { ok: true, data };
 }
 
-export async function call(config, action, payload = {}, { timeout = 20000, fetchImpl = globalThis.fetch } = {}) {
+export async function call(config, action, payload = {}, { timeout = 45000, fetchImpl = globalThis.fetch } = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeout);
   try {
