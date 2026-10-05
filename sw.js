@@ -1,7 +1,7 @@
 // 오프라인용 서비스 워커 (설계 2026-10-05 7.4).
 // 화면 파일만 저장해 두고 먼저 꺼내 쓴다. 서버 요청(다른 주소)은 건드리지 않는다.
-// b3143e1ca014은 tools/sync.py --publish-phone이 올릴 때 파일 내용 지문으로 바꾼다.
-const VERSION = "b3143e1ca014";
+// 6c13546b48dd은 tools/sync.py --publish-phone이 올릴 때 파일 내용 지문으로 바꾼다.
+const VERSION = "6c13546b48dd";
 const CACHE = `workout-log-${VERSION}`;
 const FILES = ["./", "index.html", "style.css", "app.js", "logic.js", "store.js", "net.js", "merge.js",
   "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-512.png"];

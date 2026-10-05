@@ -1,7 +1,8 @@
 // 핸드폰 저장소 (설계 2026-10-05 5.2, 7.2): 연결 정보, 루틴 사본, 서버 사본, 보낼 목록.
 // localStorage에 JSON으로 둔다. 망가진 값은 빈 값으로 보고, 저장 공간이 꽉 차면 false를 돌려준다.
 
-const KEYS = { config: "wl.config", routine: "wl.routine", mirror: "wl.mirror", outbox: "wl.outbox", last: "wl.lastSync" };
+const KEYS = { config: "wl.config", routine: "wl.routine", mirror: "wl.mirror", outbox: "wl.outbox", last: "wl.lastSync",
+  stuck: "wl.stuck" }; // stuck: 서버가 거절한 조각. 다시 보내지 않지만 화면 값에는 계속 얹는다
 const MIRROR_LIMIT = 3_000_000; // 넘으면 90일보다 오래된 날짜를 핸드폰 사본에서 뺀다
 const KEEP_DAYS = 90;
 
@@ -34,6 +35,22 @@ export function createStore(storage, Merge) {
     const o = read(KEYS.outbox, []);
     return Array.isArray(o) ? o : [];
   };
+  const getStuck = () => {
+    const o = read(KEYS.stuck, []);
+    return Array.isArray(o) ? o : [];
+  };
+
+  // 서버에 더 새 값이 생겨서 거절된 조각이 화면에서 질 때는 버린다
+  function pruneStuck(mirror) {
+    const kept = [];
+    for (const s of getStuck()) {
+      const live = {};
+      const server = (mirror.entries[s.date] || {}).parts || {};
+      for (const [k, v] of Object.entries(s.parts)) if (!server[k] || Merge.accept(server[k], v)) live[k] = v;
+      if (Object.keys(live).length) kept.push({ ...s, parts: live });
+    }
+    write(KEYS.stuck, kept);
+  }
 
   function trimMirror(mirror) {
     if (JSON.stringify(mirror).length <= MIRROR_LIMIT) return mirror;
@@ -48,7 +65,7 @@ export function createStore(storage, Merge) {
   function dayView(date) {
     const entry = getMirror().entries[date] || { parts: {}, order: [] };
     let parts = entry.parts, order = entry.order;
-    for (const item of getOutbox()) {
+    for (const item of [...getOutbox(), ...getStuck()]) {
       if (item.date !== date) continue;
       const merged = Merge.mergeParts(parts, order, item.parts);
       parts = merged.parts;
@@ -59,7 +76,7 @@ export function createStore(storage, Merge) {
 
   function allDates() {
     const dates = new Set(Object.keys(getMirror().entries));
-    for (const item of getOutbox()) dates.add(item.date);
+    for (const item of [...getOutbox(), ...getStuck()]) dates.add(item.date);
     return [...dates].sort();
   }
 
@@ -72,6 +89,33 @@ export function createStore(storage, Merge) {
     setLastSync: (v) => write(KEYS.last, v),
     getMirror,
     getOutbox,
+    getStuck,
+    resetMirror() {
+      return write(KEYS.mirror, { cursor: 0, entries: {} });
+    },
+    // 거절된 조각을 stuck으로 옮긴다. 항목 전체가 거절된 id를 돌려준다 (보낼 목록에서 뺄 것)
+    keepRejected(sent, rejected) {
+      const byId = new Map(sent.map((i) => [i.id, i]));
+      const stuck = getStuck();
+      const whole = [];
+      for (const x of rejected || []) {
+        const item = x && byId.get(x.id);
+        if (!item) continue;
+        if (x.key === null || x.key === undefined) {
+          whole.push(item.id);
+          stuck.push({ id: item.id, date: item.date, parts: item.parts, reason: x.reason });
+        } else if (item.parts[x.key]) {
+          stuck.push({ id: `${item.id}:${x.key}`, date: item.date, parts: { [x.key]: item.parts[x.key] }, reason: x.reason });
+        }
+      }
+      write(KEYS.stuck, stuck);
+      return whole;
+    },
+    stuckSummary() {
+      const stuck = getStuck();
+      return { count: stuck.reduce((n, s) => n + Object.keys(s.parts).length, 0),
+        reasons: [...new Set(stuck.map((s) => s.reason))].sort() };
+    },
     addToOutbox(item) {
       return write(KEYS.outbox, [...getOutbox(), item]);
     },
@@ -92,6 +136,7 @@ export function createStore(storage, Merge) {
       }
       if (typeof rev === "number") mirror.cursor = Math.max(mirror.cursor, rev);
       write(KEYS.mirror, trimMirror(mirror));
+      pruneStuck(mirror);
       return changed;
     },
     dayView,

@@ -1,13 +1,19 @@
 // 운동 기록 핸드폰 화면 (설계 2026-10-05 7장). PC 앱(app/ui)과 같은 순서·규칙이다.
 import * as L from "./logic.js";
 import { createStore } from "./store.js";
-import { call } from "./net.js";
+import { batches, call, parseSetupLink } from "./net.js";
 
 const Merge = window.Merge;
 const store = createStore(window.localStorage, Merge);
 const root = document.getElementById("app");
 const SYNC_EVERY_MS = 60_000;
 const NEW_DATA_TEXT = "새 기록이 들어왔어요. 입력하던 내용은 그대로 뒀어요.";
+const MAX_TEXT = 500; // 서버가 받는 글자 수
+const REASONS = { // 서버가 거절한 이유
+  text: "글자가 너무 길어요", key: "알 수 없는 종류", column: "알 수 없는 칸", value: "값 형식이 이상해요",
+  rows: "줄이 너무 많아요", row: "줄 형식이 이상해요", date: "날짜 형식이 이상해요", id: "형식이 이상해요",
+  parts: "형식이 이상해요", too_big: "하루 기록이 너무 커요",
+};
 
 const state = {
   today: L.logicalToday(),
@@ -68,19 +74,21 @@ function mark(el, bad) {
 // ---------- 첫 연결 (#c=...) ----------
 
 function readSetupLink() {
-  const m = location.hash.match(/^#c=([A-Za-z0-9_-]+)$/);
-  if (!m) return false;
-  try {
-    const b64 = m[1].replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (m[1].length % 4)) % 4);
-    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-    const data = JSON.parse(new TextDecoder().decode(bytes));
-    if (!data.u || !data.k) throw new Error("bad");
-    store.setConfig({ url: data.u, key: data.k });
-    state.status = { text: "연결했어요. 크롬 메뉴(⋮) → [앱 설치]를 누르면 홈 화면에 아이콘이 생겨요.", kind: "ok" };
-  } catch (e) {
-    state.status = { text: "연결 정보를 읽지 못했어요. QR 코드를 다시 찍어 주세요.", kind: "error" };
-  }
+  if (!location.hash.startsWith("#c=")) return false;
+  const link = parseSetupLink(location.hash);
   history.replaceState(null, "", location.pathname + location.search); // 키가 주소창·기록에 남지 않게
+  if (!link) {
+    state.status = { text: "연결 정보를 읽지 못했어요. PC 앱의 QR 코드를 다시 찍어 주세요.", kind: "error" };
+    return true;
+  }
+  const old = store.getConfig();
+  if (old && old.url !== link.url) {
+    if (!window.confirm("다른 서버로 연결을 바꿀까요? 아직 못 보낸 입력은 새 서버로 보내요.")) return true;
+    store.resetMirror(); // 예전 서버의 사본과 번호는 버린다
+    store.setRoutine(null);
+  }
+  store.setConfig({ url: link.url, key: link.key });
+  state.status = { text: "연결했어요. 크롬 메뉴(⋮) → [앱 설치]를 누르면 홈 화면에 아이콘이 생겨요.", kind: "ok" };
   return true;
 }
 
@@ -185,7 +193,8 @@ function render() {
 
   // 메모
   const memoRow = dayRows.find((r) => r.종류 === "메모");
-  w.memo = h("input", { class: "text", placeholder: "컨디션, 통증, '스쿼트 자세 OK' 등", value: memoRow ? memoRow.메모 : "" });
+  w.memo = h("input", { class: "text", placeholder: "컨디션, 통증, '스쿼트 자세 OK' 등", maxlength: MAX_TEXT,
+    value: memoRow ? memoRow.메모 : "" });
   w.memo.disabled = !editable;
   main.append(h("h2", {}, "메모"), h("div", { class: "card" }, w.memo));
 
@@ -310,7 +319,7 @@ function mealRow(slot, prefill, editable, onChange) {
   select.value = other ? L.OTHER_MENU : (menu || (options.size ? values[0] : L.OTHER_MENU));
   select.disabled = !editable;
   const info = h("div", { class: "info muted" });
-  const otherMenu = h("input", { class: "text", placeholder: "먹은 메뉴", value: other && menu ? menu : "" });
+  const otherMenu = h("input", { class: "text", placeholder: "먹은 메뉴", maxlength: 200, value: other && menu ? menu : "" });
   const otherKcal = numInput(other ? kcal : null, { enabled: editable });
   const otherProtein = numInput(other ? protein : null, { enabled: editable });
   otherMenu.disabled = !editable;
@@ -478,12 +487,15 @@ function syncLine() {
   const n = store.getOutbox().length;
   const last = store.getLastSync();
   if (state.syncing) return "보내는 중…";
+  const stuck = store.stuckSummary();
+  const stuckText = stuck.count ?
+    ` · 서버에 못 올린 내용 ${stuck.count}개 (${stuck.reasons.map((r) => REASONS[r] || "형식이 이상해요").join(", ")}). 핸드폰에는 남아 있어요` : "";
   if (n) {
     const why = last && !last.ok ? ` · ${last.message}` : "";
-    return `핸드폰에 보관 중 ${n}건 (인터넷 연결되면 보내요)${why}`;
+    return `핸드폰에 보관 중 ${n}건 (인터넷 연결되면 보내요)${why}${stuckText}`;
   }
-  if (!last) return "";
-  return last.ok ? `서버에 저장됨 · ${timeText(last.at)}` : `서버 오류: ${last.message}`;
+  if (!last) return stuckText.slice(3);
+  return (last.ok ? `서버에 저장됨 · ${timeText(last.at)}` : `서버 오류: ${last.message}`) + stuckText;
 }
 
 function refreshSyncLine() {
@@ -542,14 +554,14 @@ async function syncNow({ manual = false } = {}) {
   let changed = [];
   let ok = false;
   try {
-    const outbox = store.getOutbox();
-    if (outbox.length) {
-      const r = await call(cfg, "push", { by: "phone", items: outbox });
-      if (!r.ok) return fail(r, manual);
+    for (const batch of batches(store.getOutbox())) {
+      const r = await call(cfg, "push", { by: "phone", items: batch });
+      if (!r.ok) return fail(r, manual); // 앞 묶음이 받아졌어도 다시 보내면 결과가 같다
       const rejected = r.data.rejected || [];
-      store.removeAccepted([...(r.data.accepted || []), ...rejected.map((x) => x.id)]);
+      const whole = store.keepRejected(batch, rejected); // 거절된 조각은 지우지 않고 핸드폰에 남긴다
+      store.removeAccepted([...(r.data.accepted || []), ...whole]);
       changed = changed.concat(store.applyServerEntries(r.data.entries, null));
-      if (rejected.length) setStatus(`서버가 받지 않은 입력이 ${rejected.length}개 있어요 (${rejected[0].reason}).`, "warn");
+      if (rejected.length) setStatus("서버가 받지 않은 내용이 있어요. 아래 줄을 확인해 주세요.", "warn");
     }
     const routine = store.getRoutine();
     const p = await call(cfg, "pull", { since: store.getMirror().cursor, want_routine: true,
